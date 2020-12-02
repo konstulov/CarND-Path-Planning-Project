@@ -102,33 +102,48 @@ int main() {
           }
 
           bool too_close = false;
+          // flag to determine if it's safe to perform a left lane shift
+          bool left_clear = (lane == 0) ? false : true;
+          bool right_clear = (lane == 2) ? false : true;
+          double min_clear = 10.0;
 
           // find ref_v to use
           for (int i=0; i<sensor_fusion.size(); i++) {
             // car is in my lane
             float d = sensor_fusion[i][6];
             double lane_d = 2 + 4*lane;
-            if (d < lane_d+2 && d > lane_d-2) {
-              double vx = sensor_fusion[i][3];
-              double vy = sensor_fusion[i][4];
-              double check_speed = sqrt(vx*vx + vy*vy);
-              double check_car_s = sensor_fusion[i][5];
+            double vx = sensor_fusion[i][3];
+            double vy = sensor_fusion[i][4];
+            double check_speed = sqrt(vx*vx + vy*vy);
+            double check_car_s = sensor_fusion[i][5];
+            check_car_s += ((double)prev_size*0.02*check_speed);
+            if (lane_d-2 < d && d < lane_d+2) {
 
-              check_car_s += ((double)prev_size*0.02*check_speed);
               if ((check_car_s > car_s) && ((check_car_s - car_s) < 30)) {
                 // do some logic here, lower ref velocity so we don't crash into the car in front of us
-                // could aslo flag to try to change lanes
+                // could also flag to try to change lanes
                 //ref_vel = 29.5; // mph
                 too_close = true;
-                if (lane > 0) {
-                  lane = 0;
-                }
+              }
+            } else if (lane_d-6 < d && d < lane_d-2) { // car is in the left lane relative to us
+              if (fabs(check_car_s - car_s) < min_clear) {
+                left_clear = false;
+              }
+            } else if (lane_d+2 < d && d < lane_d+6) { // car is in the right lane relative to us
+              if (fabs(check_car_s - car_s) < min_clear) {
+                right_clear = false;
               }
             }
           }
 
           if (too_close) {
-            ref_vel -= 0.224; // about 5 m/s^2
+            if (left_clear) { // change lane to the left (if possible)
+              lane--;
+            } else if (right_clear) { // change lane to the right (if possible)
+              lane++;
+            } else { // slow down
+              ref_vel -= 0.224; // about 5 m/s^2
+            }
           } else if (ref_vel < 49.5) {
             ref_vel += 0.224;
           }
