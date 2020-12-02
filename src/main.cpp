@@ -102,50 +102,145 @@ int main() {
           }
 
           bool too_close = false;
-          // flag to determine if it's safe to perform a left lane shift
-          bool left_clear = (lane == 0) ? false : true;
-          bool right_clear = (lane == 2) ? false : true;
-          double min_clear = 10.0;
+          double clear_dist = 15.0;
+          double safe_dist = 30.0;
+          double range_dist = 60.0;
+          double inf_dist = 100.0;
+          // small cost to lane shift to avoid going back and forth
+          double lane_shift_cost = 1.0;
+          double cost_center = 0.0;
+          double cost_left = (lane == 0) ? std::numeric_limits<double>::infinity() : lane_shift_cost;
+          double cost_right = (lane == 2) ? std::numeric_limits<double>::infinity() : lane_shift_cost;
+          
+          // min speeds for the left/center/right cars ahead of us
+          double speed_center = std::numeric_limits<double>::infinity();
+          double speed_left = std::numeric_limits<double>::infinity();
+          double speed_right = std::numeric_limits<double>::infinity();
+          double speed_left_left = std::numeric_limits<double>::infinity();
+          double speed_right_right = std::numeric_limits<double>::infinity();
+          
+          // distance to the closest car ahead of us
+          double space_center = inf_dist;
+          double space_left = inf_dist;
+          double space_right = inf_dist;
+          double space_left_left = inf_dist;
+          double space_right_right = inf_dist;
 
           // find ref_v to use
           for (int i=0; i<sensor_fusion.size(); i++) {
             // car is in my lane
             float d = sensor_fusion[i][6];
-            double lane_d = 2 + 4*lane;
+            double lane_d = 2 + 4*lane; // d coordinate for our lane's center
             double vx = sensor_fusion[i][3];
             double vy = sensor_fusion[i][4];
             double check_speed = sqrt(vx*vx + vy*vy);
             double check_car_s = sensor_fusion[i][5];
             check_car_s += ((double)prev_size*0.02*check_speed);
+            double s_diff = check_car_s - car_s;
             if (lane_d-2 < d && d < lane_d+2) {
-
-              if ((check_car_s > car_s) && ((check_car_s - car_s) < 30)) {
-                // do some logic here, lower ref velocity so we don't crash into the car in front of us
-                // could also flag to try to change lanes
-                //ref_vel = 29.5; // mph
-                too_close = true;
+              // car is in our (center) lane
+              if (s_diff > 0) {
+                // car is ahead of us
+                space_center = std::min(space_center, s_diff);
+                if (s_diff < range_dist) {
+                  // min speed of cars ahead of us within the considered distance range
+                  speed_center = std::min(speed_center, check_speed);
+                }
+                if (s_diff < safe_dist) {
+                  too_close = true;
+                }
               }
-            } else if (lane_d-6 < d && d < lane_d-2) { // car is in the left lane relative to us
-              if (fabs(check_car_s - car_s) < min_clear) {
-                left_clear = false;
+            } else if (lane >= 1 && lane_d-6 < d && d < lane_d-2) {
+              // car is in the left lane relative to us
+              if (fabs(s_diff) < clear_dist) {
+                // can't shift to the left lane due to traffic
+                space_left = 0.0;
+              } else if (s_diff > 0) {
+                // car is ahead of us
+                space_left = std::min(space_left, s_diff);
+                if (s_diff < range_dist) {
+                  // min speed of cars ahead of us within the considered distance range
+                  speed_left = std::min(speed_left, check_speed);
+                }
               }
-            } else if (lane_d+2 < d && d < lane_d+6) { // car is in the right lane relative to us
-              if (fabs(check_car_s - car_s) < min_clear) {
-                right_clear = false;
+            } else if (lane <= 1 && lane_d+2 < d && d < lane_d+6) {
+              // car is in the right lane relative to us
+              if (fabs(s_diff) < clear_dist) {
+                // can't shift to the right lane due to traffic
+                space_right = 0.0;
+              } else if (s_diff > 0) {
+                // car is ahead of us
+                space_right = std::min(space_right, s_diff);
+                if (s_diff < range_dist) {
+                  // min speed of cars ahead of us within the considered distance range
+                  speed_right = std::min(speed_right, check_speed);
+                }
+              }
+            } else if (lane == 2 && lane_d-10 < d && d < lane_d-6) {
+              // car is two lanes to the left of us
+              if (fabs(s_diff) < clear_dist) {
+                // can't shift two lanes to the left
+                space_left_left = 0.0;
+              } else if (s_diff > 0) {
+                // car is ahead of us
+                space_left_left = std::min(space_left_left, s_diff);
+                if (s_diff < range_dist) {
+                  // min speed of cars ahead of us within the considered distance range
+                  speed_left_left = std::min(speed_left_left, check_speed);
+                }
+              }
+            } else if (lane == 0 && lane_d+6 < d && d < lane_d+10) {
+              // car is two lanes to the right of us
+              if (fabs(s_diff) < clear_dist) {
+                // can't shift two lanes to the right
+                space_right_right = 0.0;
+              } else if (s_diff > 0) {
+                // car is ahead of us
+                space_right_right = std::min(space_right_right, check_car_s - car_s);
+                if (s_diff < range_dist) {
+                  // min speed of cars ahead of us within the considered distance range
+                  speed_right_right = std::min(speed_right_right, check_speed);
+                }
               }
             }
           }
-
-          if (too_close) {
-            if (left_clear) { // change lane to the left (if possible)
-              lane--;
-            } else if (right_clear) { // change lane to the right (if possible)
-              lane++;
-            } else { // slow down
-              ref_vel -= 0.224; // about 5 m/s^2
+          
+          if (space_left == 0.0) {
+            cost_left = std::numeric_limits<double>::infinity();
+          } else {
+            cost_left += (safe_dist - space_left);
+            if (lane == 2) {
+              cost_left += std::min(0.0, space_left - space_left_left);
             }
-          } else if (ref_vel < 49.5) {
-            ref_vel += 0.224;
+          }
+          if (space_right == 0.0) {
+            cost_right = std::numeric_limits<double>::infinity();
+          } else {
+            cost_right += (safe_dist - space_right);
+            if (lane == 0) {
+              cost_right += std::min(0.0, space_right - space_right_right);
+            }
+          }
+          cost_center += (safe_dist - space_center);
+          
+          //std::cout << "cost_center = " << cost_center << ", cost_left = " << cost_left << ", cost_right = " << cost_right << std::endl;
+          if (cost_center <= cost_left && cost_center <= cost_right) {
+            //std::cout << "no lane change" << std::endl;
+            // changing lanes isn't cost optimal
+            if (too_close) {
+              // the car ahead is too close - slow down
+              ref_vel -= 0.224; // about 5 m/s^2
+            } else if (ref_vel < 49.5) {
+              ref_vel += 0.224;
+            }
+          } else if (cost_left <= cost_right) {
+            //std::cout << "left lane change" << std::endl;
+            // change lane to the left
+            lane--;
+          } else {
+            //std::cout << "right lane change" << std::endl;
+            // change lane to the right
+            lane++;
           }
 
           // Vector of widely spaced (x, y) waypoints, evenly spaced at 30m
