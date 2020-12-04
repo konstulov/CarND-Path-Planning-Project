@@ -65,6 +65,48 @@ the path has processed since last time.
 
 2. There will be some latency between the simulator running and the path planner returning a path, with optimized code usually its not very long maybe just 1-3 time steps. During this delay the simulator will continue using points that it was last given, because of this its a good idea to store the last points you have used so you can have a smooth transition. previous_path_x, and previous_path_y can be helpful for this transition since they show the last points given to the simulator controller with the processed points already removed. You would either return a path that extends this previous path or make sure to create a new path that has a smooth transition with this last path.
 
+## Path Planner
+
+The path planner of the self-driving car (SDV) uses a combination of its current and future positions and speeds and the sensor fusion information to get the relative positions of the cars around it to figure out when it's safe and prudent to make lane changes.
+When there aren't any cars ahead in the SDV's lane it will continue cruising at a target speed of 49.5 mph (main.cpp line 17) to avoid going above the speed limit of 50 mph. On the other hand, when the SDV detects (from the sensor fusion inputs) cars ahead in its lane, it will use a cost function to determine whether a left or right lane shift is advisable. In the following sections we cover the basic functionality and details of the path planner.
+
+### Basic Motion
+Before implementing the more advanced path planning logic for our SDV, we first have to solve the basic problem of getting the car moving along the highway in the direction of traffic. This was achieved by incrementing the `s` coordinate of the SDV (in Frenet coordinate system) in such a way that it's making forward progress with the desired speed of just below 50 mph.
+
+### Spline Interpolation
+Simply incrementing the SDV's `s` coordinate would result in jerky movement since the waypoints are spaced apart and linear interpolation would create sharp turns at each waypoint. In order to make the car follow a smooth trajectory, we use spline interpolation (main.cpp line 350) between evenly spaced out points along the highway. The spacing between the points (main.cpp line 326) was hand-tuned in such a way so as to keep the car in its lane when it's not making any lane changes (the larger the spacing the more the car tends to drift within its lane due to the approximate nature of interpolation) and to avoid jerky lane shifts that exceed the maximum allowed acceleration (the smaller the spacing the more aggressive the lane shift maneuvers appear). In fact, we switch between two different spacings for lane keeping and lane shifting (main.cpp lines 18-19). Here we also use a counter variable (`last_lane_shift`) that prescribes the amount of cycles the car should keep the lane change spacing. The same variable is also used to make the car wait a few cycles between consecutive lane changes (otherwise, the double lane change can be too abrupt and result in excessive acceleration).
+
+### Collision Avoidance
+Next in order to have the car successfully drive in traffic, we need to at least consider the cars driving in our lane ahead of us and slow down if we get too close. This is achieved by iterating through all the detected vehicles provided in the sensor fusion input and checking that the distance to the closest car in our lane ahead of us is no less than the safe distance of 30m (main.cpp lines 32, 263).
+In theory, this alone would be enough to make the car go infinitely around the track without issues albeit it would be going less than its target speed when stuck behind a slow car. Thus, the SDV needs a way of taking actions that would keep it safe (avoiding collisions) and at the same time keep it moving as close to the target speed as possible. In order to address this tradeoff between speed and safety, we need to design a cost function that would take several inputs into consideration.
+
+### Cost Function
+
+Here we detail the logic that goes into computing the cost function which helps the SDV determine the best course of action.
+First, let's list the constraints that we need to satisfy and the actions that we can choose from.
+
+Constraints:
+1. Avoid collisions
+2. Drive as close to the target speed (of 49.5mph) as possible without violating speed limit (of 50mph)
+
+Available Actions:
+1. Stay in the current lane (action: stay)
+2. Change lanes to the left (action: left)
+3. Change lanes to the right (action: right)
+4. Accelerate
+5. Slow down
+
+#### Cost function design
+In order to put the above two constrains together we need a way to express them in similar units. One way of doing it is by considering the space available for the SDV to advance forward in a given lane.
+First, let's separate the lane choice actions (1-3) and accelerate actions (4-5) separately by only considering actions 4-5 when we are staying in the current lane.
+Thus for each of the lane choice actions (stay, left, right), we need to compute how much space is available for the SDV to advance forward and to shift to the lane with the most available space to move ahead.
+Besides considering the cars ahead for deciding whether it's worth changing lanes, we also need to consider the cars that are next to us or behind us to in order to avoid collisions.
+For example, if there is a car to our right going slightly behind us, then we shouldn't consider changing lanes to the right even if the right lane is empty otherwise. Such undesirable dangerous maneuvars can be encoded in the cost function by setting it to infinity (lines 234, 242) when the available space is 0 (lines 182, 195).
+In practice it wasn't enough to consider only the distances to the cars around us, since a car that's behind us could be moving much faster than us and if we were to suddenly change lanes, then this could lead to a collision. In the code we are using both the current position and the car's relative velocity to estimate our distance to this vehicle 1 second into the future (line 164).
+Now that we have considered the hard constraint of collision avoidance, we can get to the more subtle constraint of trying to keep the target speed.
+For this we want our car to be able to change lanes when it expects to have more space to drive freely (i.e. without having to slow down behind traffic) in a different lane. At first I implemented logic that would only look for the vehicles in the neighboring lanes and decrease the action cost if there was more space to the closest car ahead (lines 236, 244). However, this lead to situations where the car would get easily boxed in (in leftmost or rightmost lanes) by two slow moving cars although there was a way to go freely ahead by changing two lanes. At this point, I added extra logic that would also look at the skip lanes to decide whether a (double) lane shift is desirable (lines 228, 236). Upon tweaking some of the parameters to make the SDV reasonably aggressive while avoiding collisions, I was able to achieve good performance. The SDV is able to make decisions that help it advance forward by weaving through the traffic fairly safely. The two important parameters that control how aggressive the car is are `min_dist` and `clear_dist` (main.cpp lines 27, 30), which are used to decide whether it's safe for the SDV to change into the nearby lane by considering the min distance to the cars in that lane at the current moment (`min_dist`) and 1 second into the future (`clear_dist`). Empirically these parameters were set to 10m and 20m respectively (smaller values would lead to occasional collisions when the SDV tried to perform lane shifts in tight spaces).
+One interesting thing that can obvserved from the SDV's behavior is that it sometimes appears to shift lanes for no reason. This, however, isn't true in most cases. Since the resolution of the simulator is lower than the SDV's sensor information, the SDV tends to make lane shifts in advance if it sees that its current lane provides less free runway than another lane. One could argue that such early lane shifts aren't necessary and in some cases could even lead to changing lanes too often (e.g. if other cars in the traffic tended to change lanes often). However, this doesn't appear to be an issue since most cars in the simulator don't change lanes.
+
 ## Tips
 
 A really helpful resource for doing this project and creating smooth trajectories was using http://kluge.in-chemnitz.de/opensource/spline/, the spline function is in a single hearder file is really easy to use.
